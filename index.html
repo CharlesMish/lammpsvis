@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Research Visualizations</title>
+    <style>
+        /* Basic Reset */
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        html, body {
+            height: 100%;
+            overflow: hidden; /* Prevent scrollbars on main page */
+            font-family: sans-serif;
+            display: flex;
+            flex-direction: column; /* Stack nav on top of content */
+        }
+
+        /* Navigation Bar Styling */
+        #navigation {
+            flex-shrink: 0; /* Prevent nav from shrinking */
+            padding: 10px 15px;
+            background-color: #f0f0f0;
+            border-bottom: 1px solid #ccc;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        #navigation button {
+            padding: 5px 15px;
+            font-size: 1em;
+            cursor: pointer;
+        }
+
+        #navigation span {
+            font-weight: bold;
+            font-size: 1.1em;
+            text-align: center;
+            flex-grow: 1; /* Allow title to take space */
+            margin: 0 15px;
+        }
+
+        /* Iframe Container Styling */
+        #contentFrameContainer {
+            flex-grow: 1; /* Allow iframe container to fill remaining space */
+            width: 100%;
+            overflow: hidden; /* Hide potential scrollbars if iframe fits perfectly */
+        }
+
+        #contentFrame {
+            width: 100%;
+            height: 100%;
+            border: none; /* Remove default iframe border */
+            display: block; /* Remove potential extra space below iframe */
+        }
+    </style>
+</head>
+<body>
+
+    <div id="navigation">
+        <button id="prevButton">&lt; Prev</button>
+        <span id="currentVisTitle">Visualization 1</span>
+        <button id="nextButton">Next &gt;</button>
+    </div>
+
+    <div id="contentFrameContainer">
+        <iframe id="contentFrame" src="vis1.html" title="Visualization Content">
+            Your browser does not support iframes. Please access the visualization files directly.
+        </iframe>
+    </div>
+
+    <script>
+        let currentVisIndex = 1;
+        const totalVisualizations = 5;
+        // Descriptive titles for each visualization
+        const visTitles = [
+            "", // Index 0 unused
+            "Vis 1: Particle Type Probability",
+            "Vis 2: Particle Size Selection",
+            "Vis 3: Grid Generation & Composition",
+            "Vis 4: Dynamics (Verlet + Hertzian)",
+            "Vis 5: Post-Processing Metrics (2D)"
+        ];
+
+        // Get DOM elements
+        const prevButton = document.getElementById('prevButton');
+        const nextButton = document.getElementById('nextButton');
+        const titleSpan = document.getElementById('currentVisTitle');
+        const contentFrame = document.getElementById('contentFrame');
+
+        // Function to load a specific visualization
+        function loadVisualization(index) {
+            // Validate index just in case
+            if (index < 1 || index > totalVisualizations) {
+                console.error("Invalid visualization index:", index);
+                return;
+            }
+
+            currentVisIndex = index; // Update global state
+
+            let filename = `vis${currentVisIndex}.html`;
+            let displayTitle = visTitles[currentVisIndex]; // Get descriptive title
+
+            console.log(`Loading: ${filename}`); // Debug log
+            contentFrame.src = filename; // Change iframe source
+            titleSpan.innerText = displayTitle; // Update title display
+        }
+
+        // Event Listeners for buttons
+        prevButton.addEventListener('click', () => {
+            let newIndex = currentVisIndex - 1;
+            if (newIndex < 1) {
+                newIndex = totalVisualizations; // Cycle to last
+            }
+            loadVisualization(newIndex);
+        });
+
+        nextButton.addEventListener('click', () => {
+            let newIndex = currentVisIndex + 1;
+            if (newIndex > totalVisualizations) {
+                newIndex = 1; // Cycle to first
+            }
+            loadVisualization(newIndex);
+        });
+
+        // Initial setup on page load
+        // Ensure title matches the initial iframe src
+        document.addEventListener('DOMContentLoaded', () => {
+            // No need to call loadVisualization(1) here,
+            // as the initial src and title are set in HTML.
+            // If needed, could call `titleSpan.innerText = visTitles[1];`
+            // But the HTML default is fine.
+             console.log("Index page loaded. Initial vis:", contentFrame.src);
+        });
+
+    </script>
+
+</body>
+</html>

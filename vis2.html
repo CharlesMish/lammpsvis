@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Particle Size Distribution Visualizer</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/addons/p5.dom.min.js"></script>
+    <style>
+        /* CSS remains the same */
+        body { padding: 10px 20px; font-family: sans-serif; display: flex; flex-direction: column; align-items: center;}
+        .control-section { border: 1px solid #ccc; padding: 15px; margin-bottom: 20px; width: 95%; max-width: 800px; background-color: #f9f9f9; }
+        .control-section h2 { margin-top: 0; text-align: center; }
+        .slider-group { margin-bottom: 15px; }
+        .slider-group > div { margin-bottom: 5px; display: flex; align-items: center; flex-wrap: wrap; }
+        .label { display: inline-block; min-width: 180px; margin-right: 5px;}
+        .value-display { display: inline-block; min-width: 80px; font-weight: bold; }
+        .slider { vertical-align: middle; flex-grow: 1; min-width: 200px; max-width: 300px;}
+        #viz-container { margin-top: 20px; width: 98%; max-width: 1200px; border: 1px solid #ccc; padding: 10px; display: flex; flex-direction: column; align-items: center;}
+        #generation-controls { margin-top: 20px; text-align: center; }
+        #result-text { margin-top: 15px; font-weight: bold; font-size: 1.1em; min-height: 2.5em; text-align: center; }
+        #particle-viz { margin-top: 20px; height: 150px; width: 100%;}
+         canvas { display: block; background-color: #eee; /* Light gray background for canvas */ }
+    </style>
+</head>
+<body>
+    <h1>Visualization 2: Particle Size Selection</h1>
+    <p>Adjust parameters to define size distributions for CAM and SE. The *width* of each segment in the bars below represents the probability of selecting that size bin. Click 'Generate' to randomly select a size bin.</p>
+
+    <div class="control-section"><h2>Universal Settings</h2><div class="slider-group"><div><span class="label">Size Discretization Bins:</span><input type="range" id="sizediscSlider" class="slider" min="2" max="30" value="10" step="1"><span class="value-display" id="sizediscValue">10</span></div></div></div>
+     <div class="control-section"><h2>CAM Distribution (Normal)</h2><div class="slider-group"><div><span class="label">CAM D5 (min diameter, μm):</span><input type="range" id="camD5Slider" class="slider" min="1" max="10" value="5.7" step="0.1"><span class="value-display" id="camD5Value">5.7</span></div><div><span class="label">CAM D50 (avg diameter, μm):</span><input type="range" id="camD50Slider" class="slider" min="2" max="20" value="10.9" step="0.1"><span class="value-display" id="camD50Value">10.9</span></div><div><span class="label">CAM D95 (max diameter, μm):</span><input type="range" id="camD95Slider" class="slider" min="5" max="50" value="20.4" step="0.1"><span class="value-display" id="camD95Value">20.4</span></div><div><span class="label" style="font-style: italic;">Calculated CAM Sigma (σ):</span><span class="value-display" id="camSigmaValue">?</span></div></div></div>
+     <div class="control-section"><h2>SE Distribution (Bimodal Normal)</h2><div class="slider-group"><div><span class="label">SE D5 (min diameter, μm):</span><input type="range" id="seD5Slider" class="slider" min="0.1" max="1" value="0.7" step="0.01"><span class="value-display" id="seD5Value">0.7</span></div><div><span class="label">SE D50 (avg diameter, μm):</span><input type="range" id="seD50Slider" class="slider" min="0.3" max="5" value="1.0" step="0.01"><span class="value-display" id="seD50Value">1.0</span></div><div><span class="label">SE D95 (max diameter, μm):</span><input type="range" id="seD95Slider" class="slider" min="1" max="10" value="1.3" step="0.01"><span class="value-display" id="seD95Value">1.3</span></div><div><span class="label">SE Bimodal Ratio (Weight of Mode 1):</span><input type="range" id="seRatioSlider" class="slider" min="0" max="1" value="0.5" step="0.01"><span class="value-display" id="seRatioValue">0.5</span></div><div><span class="label" style="font-style: italic;">Calculated SE Sigma (σ):</span><span class="value-display" id="seSigmaValue">?</span></div><div><span class="label" style="font-style: italic;">SE Mode 1 Mean (μ1):</span><span class="value-display" id="seMu1Value">?</span></div><div><span class="label" style="font-style: italic;">SE Mode 2 Mean (μ2):</span><span class="value-display" id="seMu2Value">?</span></div></div></div>
+    <div id="viz-container">
+        <canvas id="distributionCanvas"></canvas>
+        <div id="particle-viz">
+             <canvas id="particleCanvas"></canvas>
+        </div>
+    </div>
+
+    <div id="generation-controls">
+        <button id="generateButton">Generate Random Number & Select Sizes</button>
+        <div id="result-text">Click button to generate sizes.</div>
+    </div>
+
+
+    <script>
+        // --- Global Variables ---
+        // (Same slider/span variables)
+        let sizediscSlider, camD5Slider, camD50Slider, camD95Slider, seD5Slider, seD50Slider, seD95Slider, seRatioSlider;
+        let sizediscValueSpan, camD5ValueSpan, camD50ValueSpan, camD95ValueSpan, seD5ValueSpan, seD50ValueSpan, seD95ValueSpan, seRatioValueSpan;
+        let camSigmaValueSpan, seSigmaValueSpan, seMu1ValueSpan, seMu2ValueSpan;
+        let generateButton, resultTextP;
+
+        // Distribution data
+        let sizedisc = 10; let camSpace = [], seSpace = []; let camPdf = [], sePdf = []; let camCdf = [], seCdf = [];
+        let randomNumber = -1; let selectedCamIndex = -1, selectedSeIndex = -1; let selectedCamDiameter = -1, selectedSeDiameter = -1; let resultMessage = "Click button to generate sizes.";
+
+        // Canvases and Contexts
+        let distCanvas, particleCanvas; let distCtx, particleCtx;
+
+        // Colors (Simplified for Debugging)
+        let camColor = 'rgba(0, 0, 255, 0.7)'; // Solid Blue
+        let seColor = 'rgba(255, 215, 0, 0.7)'; // Solid Yellow/Gold
+        let highlightColorCam = 'red'; // Bright highlight
+        let highlightColorSe = 'red'; // Bright highlight
+        let separatorColor = '#000';
+        let textColor = '#000'; // Black text
+
+        function setup() {
+             noCanvas(); // p5 canvas not used directly
+             console.log("Setup started");
+
+             // Link Sliders, Spans, Button, Text (Same as before)
+              sizediscSlider = select('#sizediscSlider'); camD5Slider = select('#camD5Slider'); camD50Slider = select('#camD50Slider'); camD95Slider = select('#camD95Slider'); seD5Slider = select('#seD5Slider'); seD50Slider = select('#seD50Slider'); seD95Slider = select('#seD95Slider'); seRatioSlider = select('#seRatioSlider'); sizediscValueSpan = select('#sizediscValue'); camD5ValueSpan = select('#camD5Value'); camD50ValueSpan = select('#camD50Value'); camD95ValueSpan = select('#camD95Value'); seD5ValueSpan = select('#seD5Value'); seD50ValueSpan = select('#seD50Value'); seD95ValueSpan = select('#seD95Value'); seRatioValueSpan = select('#seRatioValue'); camSigmaValueSpan = select('#camSigmaValue'); seSigmaValueSpan = select('#seSigmaValue'); seMu1ValueSpan = select('#seMu1Value'); seMu2ValueSpan = select('#seMu2Value'); generateButton = select('#generateButton'); generateButton.mousePressed(generateAndSelectSizes); resultTextP = select('#result-text');
+
+             // Add Input Event Listeners (Same as before)
+              sizediscSlider.input(handleInput); camD5Slider.input(handleInput); camD50Slider.input(handleInput); camD95Slider.input(handleInput); seD5Slider.input(handleInput); seD50Slider.input(handleInput); seD95Slider.input(handleInput); seRatioSlider.input(handleInput);
+
+             // Get Canvases and Contexts
+             distCanvas = document.getElementById('distributionCanvas');
+             particleCanvas = document.getElementById('particleCanvas');
+             if (!distCanvas || !particleCanvas) {
+                 console.error("ERROR: Canvas element(s) not found!");
+                 return;
+             }
+             distCtx = distCanvas.getContext('2d');
+             particleCtx = particleCanvas.getContext('2d');
+              if (!distCtx || !particleCtx) {
+                 console.error("ERROR: Failed to get 2D context for canvas!");
+                 return;
+             }
+             console.log("Canvases and contexts obtained.");
+
+             // Add resize listener
+             window.addEventListener('resize', handleResize);
+
+             // Initial calculation and drawing
+             console.log("Triggering initial handleResize...");
+             handleResize();
+             console.log("Setup finished.");
+        }
+
+
+         // --- Event Handlers ---
+         function handleInput() {
+            console.log("handleInput triggered");
+            try {
+                updateSliderValues();
+                updateDistributions();
+                drawDistributions();
+                drawParticles();
+                resultTextP.html(resultMessage);
+             } catch (error) {
+                 console.error("Error during handleInput:", error);
+             }
+         }
+
+         function handleResize() {
+             console.log("handleResize triggered");
+              try {
+                 // Recalculate canvas sizes and redraw everything
+                 // updateDistributions(); // Might not be needed unless D5/D95 scale changes drastically? Recalc PDF might be good.
+                 updateDistributions(); // Let's recalc just in case
+                 drawDistributions();
+                 drawParticles();
+              } catch (error) {
+                  console.error("Error during handleResize:", error);
+              }
+         }
+
+        // --- Helper Functions (calculate_sigma, normalPDF, linspace, cumsum, searchsorted) ---
+        // (No changes needed in these helpers, assumed correct from previous step)
+        function calculate_sigma(mu, d5, d95) { const Z_05 = -1.64485; const Z_95 = 1.64485; let sigma_D5 = 0; if (Z_05 !== 0 && mu > d5) sigma_D5 = (d5 - mu) / Z_05; else if (mu <= d5) sigma_D5 = (d95-d5) / (Z_95 - Z_05) / 2; let sigma_D95 = 0; if (Z_95 !== 0 && d95 > mu) sigma_D95 = (d95 - mu) / Z_95; else if (d95 <= mu) sigma_D95 = (d95-d5) / (Z_95 - Z_05) / 2; if (sigma_D5 > 1e-6 && sigma_D95 > 1e-6) return (sigma_D5 + sigma_D95) / 2.0; else if (sigma_D5 > 1e-6) return sigma_D5; else if (sigma_D95 > 1e-6) return sigma_D95; else return 0.01; }
+        function normalPDF(x, mu, sigma) { if (sigma <= 1e-6) return 0; const c = 1.0 / (sigma * Math.sqrt(2.0 * Math.PI)); const e = -0.5 * Math.pow((x - mu) / sigma, 2); return c * Math.exp(e); }
+        function linspace(start, end, num) { if (num <= 1) return [start]; const arr = []; const step = (end - start) / (num - 1); for (let i = 0; i < num; i++) arr.push(start + i * step); return arr; }
+        function cumsum(arr) { const cdf = []; let sum = 0; for (const val of arr) { sum += val; cdf.push(sum); } if (cdf.length > 0 && Math.abs(sum) > 1e-9) { const lastVal = cdf[cdf.length - 1]; for(let i = 0; i < cdf.length; i++) { cdf[i] /= lastVal; } } return cdf; }
+        function searchsorted(cdf_array, value) { if (!cdf_array || cdf_array.length === 0) return 0; if (value <= 0) return 0; if (value >= 1) return cdf_array.length; for (let i = 0; i < cdf_array.length; i++) { if (value < cdf_array[i]) return i; } return cdf_array.length; }
+
+
+        // --- Update Logic ---
+        // updateSliderValues remains the same
+        function updateSliderValues() { sizedisc = parseInt(sizediscSlider.value()); let camD5 = parseFloat(camD5Slider.value()); let camD50 = parseFloat(camD50Slider.value()); let camD95 = parseFloat(camD95Slider.value()); let seD5 = parseFloat(seD5Slider.value()); let seD50 = parseFloat(seD50Slider.value()); let seD95 = parseFloat(seD95Slider.value()); let seRatio = parseFloat(seRatioSlider.value()); if (camD5 >= camD95) { camD5 = camD95 - 0.1; camD5 = Math.max(1, camD5); camD5Slider.value(camD5); } if (seD5 >= seD95) { seD5 = seD95 - 0.01; seD5 = Math.max(0.1, seD5); seD5Slider.value(seD5); } camD50Slider.attribute('min', camD5); camD50Slider.attribute('max', camD95); camD50 = Math.max(camD5, Math.min(camD50, camD95)); camD50Slider.value(camD50); seD50Slider.attribute('min', seD5); seD50Slider.attribute('max', seD95); seD50 = Math.max(seD5, Math.min(seD50, seD95)); seD50Slider.value(seD50); sizediscValueSpan.html(sizedisc); camD5ValueSpan.html(camD5.toFixed(1)); camD50ValueSpan.html(camD50.toFixed(1)); camD95ValueSpan.html(camD95.toFixed(1)); seD5ValueSpan.html(seD5.toFixed(2)); seD50ValueSpan.html(seD50.toFixed(2)); seD95ValueSpan.html(seD95.toFixed(2)); seRatioValueSpan.html(seRatio.toFixed(2)); }
+        // updateDistributions remains the same
+         function updateDistributions() {
+            console.log("Updating distributions...");
+            sizedisc = parseInt(sizediscSlider.value());
+            let camD5=parseFloat(camD5Slider.value()),camD50=parseFloat(camD50Slider.value()),camD95=parseFloat(camD95Slider.value());
+            let seD5=parseFloat(seD5Slider.value()),seD50=parseFloat(seD50Slider.value()),seD95=parseFloat(seD95Slider.value()),seRatio=parseFloat(seRatioSlider.value());
+            let camSigma=calculate_sigma(camD50, camD5, camD95); camSpace=linspace(camD5, camD95, sizedisc); camPdf=camSpace.map(x => normalPDF(x, camD50, camSigma)); let camPdfSum=camPdf.reduce((a,b)=>a+b,0); if(camPdfSum>1e-9){camPdf=camPdf.map(p=>p/camPdfSum);}else{console.warn("CAM PDF sum is near zero, using uniform.");camPdf.fill(1.0/sizedisc);} camCdf=cumsum(camPdf); camSigmaValueSpan.html(camSigma.toFixed(3));
+            let seSigma=calculate_sigma(seD50, seD5, seD95)/2.0; let seMu1=(seD5+seD50)/2.0; let seMu2=(seD95+seD50)/2.0; seSpace=linspace(seD5, seD95, sizedisc); let sePdf1=seSpace.map(x=>normalPDF(x,seMu1,seSigma)); let sePdf2=seSpace.map(x=>normalPDF(x,seMu2,seSigma)); sePdf=[]; for(let i=0;i<sizedisc;i++){sePdf.push(seRatio*sePdf1[i]+(1.0-seRatio)*sePdf2[i]);} let sePdfSum=sePdf.reduce((a,b)=>a+b,0); if(sePdfSum>1e-9){sePdf=sePdf.map(p=>p/sePdfSum);}else{console.warn("SE PDF sum is near zero, using uniform.");sePdf.fill(1.0/sizedisc);} seCdf=cumsum(sePdf); seSigmaValueSpan.html(seSigma.toFixed(3)); seMu1ValueSpan.html(seMu1.toFixed(3)); seMu2ValueSpan.html(seMu2.toFixed(3));
+            // console.log("CAM PDF:", camPdf.map(p => p.toFixed(3))); // Log PDF values
+            // console.log("SE PDF:", sePdf.map(p => p.toFixed(3))); // Log PDF values
+            if(randomNumber < 0) { resultMessage = "Parameters updated. Click button to generate sizes."; }
+             console.log("Distributions updated.");
+        }
+
+
+        // --- Drawing Functions ---
+
+         function drawDistributions() {
+            console.log("drawDistributions called");
+            const canvas = distCanvas;
+            const ctx = distCtx;
+            if (!ctx) { console.error("distCtx is null in drawDistributions"); return; }
+
+            // Ensure canvas dimensions are set using clientWidth
+            const containerWidth = canvas.parentElement.clientWidth;
+            canvas.width = containerWidth > 0 ? containerWidth : 800; // Fallback width
+            canvas.height = 180; // Keep fixed height for layout predictability
+            const w = canvas.width;
+            const h = canvas.height;
+            console.log(` Canvas dimensions set: w=${w}, h=${h}`);
+
+            // Bar layout parameters (same as before)
+            const barHeight = 40; const barPaddingTop = 25; const barPaddingBottom = 35; const barSpacing = 20;
+            const camBarY = barPaddingTop; const seBarY = camBarY + barHeight + barSpacing + barPaddingTop;
+            const barMargin = w * 0.02; const barWidth = w - 2 * barMargin; const barX = barMargin;
+             if (w <= 0 || h <=0 || barWidth <= 0) {
+                 console.error("Invalid dimensions for drawing:", {w, h, barWidth});
+                 return; // Don't draw if dimensions are bad
+             }
+
+            ctx.clearRect(0, 0, w, h);
+            ctx.font = '12px sans-serif';
+            ctx.fillStyle = textColor;
+            ctx.textAlign = 'center';
+
+            // Draw CAM Bar Title & Bar
+            ctx.fillText("CAM Size Distribution (μm)", w / 2, camBarY - 10);
+            drawSingleDistributionVariableWidth(ctx, barX, camBarY, barWidth, barHeight, parseFloat(camD5Slider.value()), parseFloat(camD95Slider.value()), camPdf, selectedCamIndex, camColor, highlightColorCam);
+
+            // Draw SE Bar Title & Bar
+            ctx.fillText("SE Size Distribution (μm)", w / 2, seBarY - 10);
+            drawSingleDistributionVariableWidth(ctx, barX, seBarY, barWidth, barHeight, parseFloat(seD5Slider.value()), parseFloat(seD95Slider.value()), sePdf, selectedSeIndex, seColor, highlightColorSe);
+
+            console.log("drawDistributions finished");
+        }
+
+        function drawSingleDistributionVariableWidth(ctx, x, y, w, h, minVal, maxVal, pdf, selectedIndex, baseColor, highlightColor) {
+             console.log(` drawSingleDist: x=${x.toFixed(1)}, y=${y.toFixed(1)}, w=${w.toFixed(1)}, h=${h.toFixed(1)}, bins=${pdf?.length}, selected=${selectedIndex}`);
+             if (!pdf || pdf.length === 0) {
+                 console.warn("drawSingleDist received invalid pdf array");
+                 return;
+             }
+
+            ctx.strokeStyle = '#aaa';
+            ctx.lineWidth = 1;
+
+            let currentX = x;
+            let totalDrawnWidth = 0; // Debug
+
+            for (let i = 0; i < pdf.length; i++) { // Use pdf.length instead of global sizedisc
+                let binVisualWidth = 0;
+                // Check if pdf[i] is a valid, finite, non-negative number
+                if (pdf[i] && isFinite(pdf[i]) && pdf[i] >= 0) {
+                     binVisualWidth = w * pdf[i];
+                 } else {
+                     console.warn(` PDF value issue at index ${i}:`, pdf[i], `. Bin width set to 0.`);
+                     binVisualWidth = 0; // Ensure no drawing happens if value is bad
+                 }
+
+                 // Check if calculated width is valid
+                 if (!isFinite(binVisualWidth) || binVisualWidth < 0) {
+                      console.warn(` Invalid binVisualWidth at index ${i}:`, binVisualWidth, `. Bin width set to 0.`);
+                      binVisualWidth = 0;
+                 }
+
+
+                // Draw the bin rectangle ONLY if width is positive
+                if (binVisualWidth > 0.01) { // Use small threshold to avoid tiny rects causing issues
+                     ctx.fillStyle = baseColor;
+                     try {
+                        ctx.fillRect(currentX, y, binVisualWidth, h);
+                     } catch (e) { console.error(`Error drawing rect for bin ${i}:`, e); }
+
+                     // Draw subtle bin separators
+                     if (i < pdf.length - 1 && binVisualWidth > 1) { // Only if visually distinct
+                        ctx.strokeStyle = separatorColor;
+                        ctx.lineWidth = 1.5; // Make them faint
+                        ctx.beginPath();
+                        // Draw slightly inside the bin edge to avoid overlap/thickening
+                        ctx.moveTo(currentX + binVisualWidth - 0.5, y);
+                        ctx.lineTo(currentX + binVisualWidth - 0.5, y + h);
+                        ctx.stroke();
+                    }
+                     totalDrawnWidth += binVisualWidth;
+                }
+
+                // Highlight selected bin (draw border *after* filling)
+                if (i === selectedIndex && binVisualWidth > 0) {
+                    ctx.strokeStyle = highlightColor;
+                    ctx.lineWidth = 3; // Make highlight obvious
+                    try {
+                       ctx.strokeRect(currentX + 1.5, y + 1.5, Math.max(0, binVisualWidth - 3), Math.max(0, h - 3)); // Ensure non-negative dimensions
+                    } catch(e) { console.error(`Error drawing highlight for bin ${i}:`, e); }
+                    ctx.lineWidth = 1; // Reset
+                }
+
+                // Move to the next bin's starting position
+                currentX += binVisualWidth;
+                 if (!isFinite(currentX)) {
+                     console.error(`currentX became non-finite at index ${i}`);
+                     break; // Stop drawing if position becomes invalid
+                 }
+            }
+
+            // Final check on total width - might be slightly off due to floating point
+             console.log(` drawSingleDist finished. Total drawn width: ${totalDrawnWidth.toFixed(2)} (Bar width: ${w.toFixed(2)})`);
+
+            // Draw Axis Labels
+            ctx.fillStyle = textColor;
+            ctx.font = '12px sans-serif';
+            ctx.textAlign = 'left';
+            ctx.fillText(minVal.toFixed(2), x, y + h + 15);
+            ctx.textAlign = 'right';
+            ctx.fillText(maxVal.toFixed(2), x + w, y + h + 15);
+            ctx.textAlign = 'center';
+            ctx.fillText("Diameter (μm) Range", x + w / 2, y + h + 15);
+        }
+
+        // drawParticles remains the same
+        function drawParticles() {
+             const canvas = particleCanvas; const ctx = particleCtx; if (!ctx) return; const w = canvas.width = canvas.clientWidth; const h = canvas.height = 150; const baseY = h * 0.55; const maxDiameter = Math.max(parseFloat(camD95Slider.value()), parseFloat(seD95Slider.value()), 1); const scaleFactor = (w * 0.25) / maxDiameter;
+             ctx.clearRect(0, 0, w, h); ctx.font = '14px sans-serif'; ctx.textAlign = 'center';
+             ctx.fillStyle = textColor; ctx.fillText("Selected CAM Particle", w * 0.25, baseY + 40);
+             if (selectedCamDiameter > 0 && isFinite(selectedCamDiameter)) { const camRadius = Math.max(0.5, (selectedCamDiameter / 2.0) * scaleFactor); ctx.fillStyle = camColor; ctx.strokeStyle = highlightColorCam; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(w * 0.25, baseY - camRadius, camRadius, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); ctx.fillStyle = textColor; ctx.fillText(`${selectedCamDiameter.toFixed(3)} μm`, w * 0.25, baseY + 25); }
+             ctx.fillStyle = textColor; ctx.fillText("Selected SE Particle", w * 0.75, baseY + 40);
+             if (selectedSeDiameter > 0 && isFinite(selectedSeDiameter)) { const seRadius = Math.max(0.5, (selectedSeDiameter / 2.0) * scaleFactor); ctx.fillStyle = seColor; ctx.strokeStyle = highlightColorSe; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(w * 0.75, baseY - seRadius, seRadius, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); ctx.fillStyle = textColor; ctx.fillText(`${selectedSeDiameter.toFixed(3)} μm`, w * 0.75, baseY + 25); }
+        }
+
+
+        // --- Generation Logic ---
+        // generateAndSelectSizes remains the same
+         function generateAndSelectSizes() {
+             console.log("Generating sizes...");
+             try {
+                 randomNumber = Math.random();
+                 selectedCamIndex = searchsorted(camCdf, randomNumber); selectedCamIndex = Math.min(Math.max(0, selectedCamIndex), camSpace.length - 1); selectedCamDiameter = camSpace[selectedCamIndex]; if (!selectedCamDiameter || !isFinite(selectedCamDiameter)) selectedCamDiameter=camSpace[0];
+                 selectedSeIndex = searchsorted(seCdf, randomNumber); selectedSeIndex = Math.min(Math.max(0, selectedSeIndex), seSpace.length - 1); selectedSeDiameter = seSpace[selectedSeIndex]; if (!selectedSeDiameter || !isFinite(selectedSeDiameter)) selectedSeDiameter=seSpace[0];
+                 resultMessage = `Generated Random Number: ${randomNumber.toFixed(4)}<br>Selected CAM Diameter: ${selectedCamDiameter.toFixed(3)} μm (Bin ${selectedCamIndex})<br>Selected SE Diameter: ${selectedSeDiameter.toFixed(3)} μm (Bin ${selectedSeIndex})`;
+                 console.log(` Selection: CAM bin ${selectedCamIndex} (${selectedCamDiameter.toFixed(3)}), SE bin ${selectedSeIndex} (${selectedSeDiameter.toFixed(3)})`);
+                 drawDistributions(); drawParticles(); resultTextP.html(resultMessage);
+              } catch (error) {
+                   console.error("Error during generateAndSelectSizes:", error);
+                   resultTextP.html("Error generating sizes. Check console.");
+              }
+         }
+
+    </script>
+</body>
+</html>

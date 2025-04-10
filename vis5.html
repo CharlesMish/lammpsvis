@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Post-Processing Visualization (2D) - SE Graph Pathfinding</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+    <style> /* CSS remains the same */
+        body { padding: 10px; font-family: sans-serif; display: flex; flex-direction: column; align-items: center;}
+        .container { width: 95%; max-width: 800px; margin-bottom: 15px; display: flex; flex-direction: column; align-items: center;}
+        #viz-container { width: 100%; max-width: 700px; aspect-ratio: 1 / 1; border: 1px solid #ccc; margin-bottom: 15px; position: relative;}
+        #info-display { font-family: monospace; white-space: pre; border: 1px solid #eee; background-color: #f8f8f8; padding: 10px; font-size: 0.95em; text-align: left; width: 95%; max-width: 680px; box-sizing: border-box; }
+        canvas { display: block; width: 100%; height: 100%; }
+    </style>
+</head>
+<body>
+    <h1>Visualization 5: Post-Processing Metrics (2D Example)</h1>
+    <p>Shows particle layout, Porosity, CAM Utilization. Tortuosity paths calculated using A* search on connected SE particle centers (orthogonal steps), avoiding CAM.</p>
+
+    <div class="container">
+        <div id="viz-container"> </div>
+        <div id="info-display"> Calculating... </div>
+    </div>
+
+    <script>
+        // --- Global Settings ---
+        const design_length = 35.0; const R_CAM = 5.5; const R_SE = 0.5;
+        let pixelsPerMicron = 18;
+
+        let particles = []; // { x, y, type, radius, isUtilized, isConnectedSE }
+        let seParticleMap = new Map(); // Map "x,y" string to SE particle object
+        let seAdjacencyGraph = new Map(); // Map "x,y" string to array of neighbor "x,y" strings
+        let porosity = 0; let camUtilization = 0;
+        let pathLengths = { min: design_length, max: 0, median: 0 };
+        let actualPaths = { min: [], max: [], median: [] }; // Store paths as arrays of {x, y} physical coords
+
+        // Colors
+        let camColorUtilized, camColorUnutilized, seColorConnected, seColorDisconnected, voidColor, pathMinColor, pathMaxColor, pathMedColor;
+
+        // --- A* Pathfinding on Graph Implementation ---
+        class AStarGraphNode {
+            constructor(id, x, y, g = Infinity, h = 0, parent = null) {
+                this.id = id; // "x,y" string key
+                this.x = x;   // physical x
+                this.y = y;   // physical y
+                this.g = g;   // cost from start (number of steps)
+                this.h = h;   // heuristic cost to end (distance)
+                this.f = g + h; // total estimated cost
+                this.parent = parent; // parent node ID string
+            }
+        }
+
+        function heuristicGraph(nodeA_coords, nodeB_coords) { // Use physical coordinates
+            let dx = nodeA_coords.x - nodeB_coords.x;
+            let dy = nodeA_coords.y - nodeB_coords.y;
+            return Math.sqrt(dx * dx + dy * dy);
+        }
+
+        function findShortestPathSEGraph(adjacencyGraph, particleMap, startId, endId) {
+             console.log(`A* Search on SE Graph: Start=${startId}, End=${endId}`);
+             const startCoords = particleMap.get(startId);
+             const endCoords = particleMap.get(endId);
+             if (!startCoords || !endCoords) { console.error("Invalid start/end ID for SE Graph A*"); return null; }
+
+             const startNode = new AStarGraphNode(startId, startCoords.x, startCoords.y, 0, heuristicGraph(startCoords, endCoords));
+             const endNodeInfo = { id: endId, x: endCoords.x, y: endCoords.y }; // Target info
+
+             let openSet = [startNode]; // Simple array acting as priority queue (sort each time)
+             let closedSet = new Set(); // Store visited node IDs ("x,y")
+             let gScore = new Map(); // Store g score for node IDs
+             let cameFrom = new Map(); // Store path parent IDs
+
+             gScore.set(startId, 0);
+
+             let iterations = 0; const maxIterations = particles.length * 2; // Safety break based on particle count
+
+             while (openSet.length > 0 && iterations < maxIterations) {
+                 iterations++;
+                 // Find node with lowest f score in openSet
+                 openSet.sort((a, b) => a.f - b.f);
+                 let currentNode = openSet.shift(); // Get and remove best node
+
+                 // Check if we reached the end
+                 if (currentNode.id === endId) {
+                     // Reconstruct path
+                     let path = [];
+                     let tempId = currentNode.id;
+                     while (tempId) {
+                          let coords = particleMap.get(tempId);
+                          if(coords) path.push({ x: coords.x, y: coords.y });
+                          tempId = cameFrom.get(tempId);
+                      }
+                     console.log(`A* SE Path found in ${iterations} iterations.`);
+                     return path.reverse(); // Return path from start to end
+                 }
+
+                 closedSet.add(currentNode.id);
+
+                 // Get neighbors from pre-built adjacency graph
+                 const neighborIds = adjacencyGraph.get(currentNode.id) || [];
+
+                 for (let neighborId of neighborIds) {
+                     if (closedSet.has(neighborId)) continue; // Skip already evaluated nodes
+
+                      let neighborCoords = particleMap.get(neighborId);
+                      if(!neighborCoords) continue; // Should not happen if graph is correct
+
+                     // Cost for each step is 1 (number of steps)
+                     let tentativeG = (gScore.get(currentNode.id) || 0) + 1;
+
+                      // If neighbor not scored yet, or this path is better
+                     if (tentativeG < (gScore.get(neighborId) || Infinity)) {
+                         cameFrom.set(neighborId, currentNode.id);
+                         gScore.set(neighborId, tentativeG);
+                         let h = heuristicGraph(neighborCoords, endNodeInfo);
+                         let f = tentativeG + h;
+
+                          // Update or add neighbor node to openSet
+                         let existingOpenNode = openSet.find(node => node.id === neighborId);
+                         if (existingOpenNode) {
+                             existingOpenNode.g = tentativeG;
+                             existingOpenNode.f = f;
+                             existingOpenNode.parent = currentNode.id; // Keep track via ID
+                         } else {
+                              openSet.push(new AStarGraphNode(neighborId, neighborCoords.x, neighborCoords.y, tentativeG, h, currentNode.id));
+                          }
+                      }
+                  }
+              }
+
+             if (iterations >= maxIterations) console.warn(`A* SE Graph exceeded max iterations (${maxIterations})`);
+             else console.warn("A* SE Graph: No path found!");
+             return null; // No path found
+         }
+
+
+        // --- p5.js Sketch Definition ---
+        let sketch = function(p) {
+
+            p.setup = function() {
+                let canvasContainer = document.getElementById('viz-container');
+                let w = canvasContainer.clientWidth; let h = canvasContainer.clientHeight; let size = Math.min(w, h); size = size > 0 ? size : 600;
+                let canvas = p.createCanvas(size, size); canvas.parent('viz-container');
+                pixelsPerMicron = p.width / design_length;
+                console.log(`Canvas: ${p.width}x${p.height}, Pixels/µm: ${pixelsPerMicron.toFixed(1)}`);
+
+                // Define colors
+                camColorUtilized=p.color(0,0,255); camColorUnutilized=p.color(100,100,180); seColorConnected=p.color(255,215,0); seColorDisconnected=p.color(200,180,100); voidColor=p.color(245); pathMinColor=p.color(0,180,0,200); pathMaxColor=p.color(200,0,0,200); pathMedColor=p.color(0,100,200,200);
+
+                // --- Run Setup Steps ---
+                createParticleConfiguration(); // Creates particles array
+                buildSEAdjacencyGraph(); // Creates graph from particles
+                // createObstacleGrid(); // Grid no longer needed for pathfinding
+                calculatePorosity();
+                calculateCAMUtilization(); // Uses particles array
+                calculateTortuosityPathsSEGraph(); // Uses SE graph
+
+                updateInfoDisplay();
+                p.noLoop();
+            };
+
+            p.draw = function() {
+                p.background(voidColor); p.stroke(150); p.strokeWeight(1); p.noFill();
+                p.rect(0, 0, p.width-1, p.height-1);
+
+                // Draw Particles
+                p.strokeWeight(0.5); p.stroke(50);
+                for (let part of particles) { let screenX=p.map(part.x,0,design_length,0,p.width); let screenY=p.map(part.y,0,design_length,p.height,0); let radiusPx=part.radius*pixelsPerMicron; if(part.type==='CAM'){p.fill(part.isUtilized?camColorUtilized:camColorUnutilized);}else{p.fill(part.isConnectedSE?seColorConnected:seColorDisconnected);} p.ellipse(screenX,screenY,radiusPx*2,radiusPx*2); }
+
+                // Draw Tortuosity Paths (connecting SE centers found by graph search)
+                drawTortuosityPath(p, pathMinColor, actualPaths.min);
+                drawTortuosityPath(p, pathMaxColor, actualPaths.max);
+                drawTortuosityPath(p, pathMedColor, actualPaths.median);
+            };
+
+             // Helper to draw path from physical points
+             function drawTortuosityPath(p, color, pathPoints) { if (!pathPoints || pathPoints.length < 2) return; p.stroke(color); p.strokeWeight(2); p.noFill(); p.beginShape(); for(let point of pathPoints){ let screenX=p.map(point.x,0,design_length,0,p.width); let screenY=p.map(point.y,0,design_length,p.height,0); p.vertex(screenX,screenY); } p.endShape(); }
+
+        }; // End sketch definition
+
+
+        // --- Particle Config, Graph Building, Calculations ---
+        function createParticleConfiguration() { /* ... Same as before ... */ console.log("Creating particle configuration..."); particles=[]; let numSE=0; let numCAM=0; const overlapCheckRadiusSq=Math.pow(R_CAM+R_SE,2); const camCenters=[[5.5,7.5],[5.5,18.5],[5.5,29.5],[16.5,18.5],[16.5,29.5],[27.5,29.5]]; const camParticles=[]; for(let center of camCenters){let camPart={x:center[0],y:center[1],type:'CAM',radius:R_CAM,isUtilized:false,isConnectedSE:false}; camParticles.push(camPart); particles.push(camPart); numCAM++;} for(let i=0;i<35;i++){let x=i+0.5; particles.push({x:x,y:0.5,type:'SE',radius:R_SE,isUtilized:false,isConnectedSE:false}); particles.push({x:x,y:1.5,type:'SE',radius:R_SE,isUtilized:false,isConnectedSE:false}); numSE+=2;} for(let i=0;i<35;i++){for(let j=0;j<35;j++){let potentialX=i+0.5; let potentialY=j+0.5; if(j===0||j===1)continue; let placeSE=true; for(let cam of camParticles){let dx=potentialX-cam.x; let dy=potentialY-cam.y; let distSq=dx*dx+dy*dy; if(distSq<overlapCheckRadiusSq){placeSE=false; break;}} if(placeSE){particles.push({x:potentialX,y:potentialY,type:'SE',radius:R_SE,isUtilized:false,isConnectedSE:false}); numSE++;}}} console.log(`Generated configuration: ${numCAM} CAM, ${numSE} SE particles`); }
+
+        // **** NEW: Build SE Adjacency Graph ****
+        function buildSEAdjacencyGraph() {
+            console.log("Building SE adjacency graph...");
+            seParticleMap.clear();
+            seAdjacencyGraph.clear();
+            const seParticles = particles.filter(p => p.type === 'SE');
+            const camParticles = particles.filter(p => p.type === 'CAM');
+            const step = 1.0; // Expected distance between adjacent SE centers
+            const toleranceSq = 0.1 * 0.1; // Allow slight position variance
+
+            // Populate map for quick lookup
+            for (let se of seParticles) {
+                seParticleMap.set(`${se.x.toFixed(1)},${se.y.toFixed(1)}`, se); // Key by coordinate string
+            }
+
+            // Build adjacency list
+            for (let se of seParticles) {
+                let currentId = `${se.x.toFixed(1)},${se.y.toFixed(1)}`;
+                let neighbors = [];
+                // Check 4 orthogonal directions
+                const potentialNeighborsCoords = [
+                    { x: se.x + step, y: se.y },
+                    { x: se.x - step, y: se.y },
+                    { x: se.x, y: se.y + step },
+                    { x: se.x, y: se.y - step }
+                ];
+
+                for (let potentialCoord of potentialNeighborsCoords) {
+                    let neighborId = `${potentialCoord.x.toFixed(1)},${potentialCoord.y.toFixed(1)}`;
+                    // Check if a particle exists at this potential neighbor location
+                    if (seParticleMap.has(neighborId)) {
+                        // Check if the path between them is blocked by CAM
+                        let midX = (se.x + potentialCoord.x) / 2.0;
+                        let midY = (se.y + potentialCoord.y) / 2.0;
+                        let isBlocked = false;
+                        for (let cam of camParticles) {
+                            let dx = midX - cam.x;
+                            let dy = midY - cam.y;
+                            if (dx*dx + dy*dy < R_CAM * R_CAM) { // Is midpoint inside a CAM?
+                                isBlocked = true;
+                                break;
+                            }
+                        }
+                        if (!isBlocked) {
+                            neighbors.push(neighborId); // Add valid neighbor ID
+                        }
+                    }
+                }
+                seAdjacencyGraph.set(currentId, neighbors);
+            }
+            console.log(`SE Adjacency Graph built. Nodes: ${seAdjacencyGraph.size}`);
+        }
+
+        // calculatePorosity remains the same
+        function calculatePorosity() { /* ... */ let totalArea=design_length*design_length; let solidsArea=0; for(let part of particles){solidsArea+=Math.PI*part.radius*part.radius;} let voidArea=totalArea-solidsArea; porosity=voidArea/totalArea; console.log(`Porosity Calculated: Porosity=${porosity.toFixed(3)}`); }
+        // calculateCAMUtilization remains the same (using BFS on particle distances)
+        function calculateCAMUtilization() { /* ... */ console.log("Calculating CAM Utilization with BFS..."); let utilizedCount=0; const contactCheckRadius_CAM_SE_Sq=Math.pow(R_CAM+R_SE,2); const contactCheckRadius_SE_SE_Sq=Math.pow(R_SE+R_SE,2); const camParticles=particles.filter(p=>p.type==='CAM'); const seParticles=particles.filter(p=>p.type==='SE'); seParticles.forEach(p=>p.isConnectedSE=false); camParticles.forEach(p=>p.isUtilized=false); let queue=[]; for(let se of seParticles){if(se.y-R_SE<=0+1e-6){se.isConnectedSE=true; queue.push(se);}} if(queue.length===0){console.warn("No SE particles touching bottom found!");camUtilization=0; return;} let head=0; while(head<queue.length){let currentSE=queue[head++]; for(let neighborSE of seParticles){if(neighborSE===currentSE||neighborSE.isConnectedSE){continue;} let dx=currentSE.x-neighborSE.x; let dy=currentSE.y-neighborSE.y; let distSq=dx*dx+dy*dy; if(distSq<=contactCheckRadius_SE_SE_Sq+1e-6){neighborSE.isConnectedSE=true; queue.push(neighborSE);}}} console.log(`Total connected SE: ${queue.length}`); for(let cam of camParticles){for(let connectedSE of queue){let dx=cam.x-connectedSE.x; let dy=cam.y-connectedSE.y; let distSq=dx*dx+dy*dy; if(distSq<=contactCheckRadius_CAM_SE_Sq+1e-6){cam.isUtilized=true; utilizedCount++; break;}}} camUtilization=(camParticles.length>0)?(utilizedCount/camParticles.length)*100.0:0; console.log(`CAM Utilization Calculated: ${utilizedCount}/${camParticles.length}=${camUtilization.toFixed(1)}%`); }
+
+        // Helper to find SE particle node closest to physical coords
+         function findClosestSENode(physX, physY) {
+             let closestSE = null;
+             let minDistSq = Infinity;
+             const seParticles = particles.filter(p => p.type === 'SE'); // Consider only SE
+
+             for (let se of seParticles) {
+                 let dx = physX - se.x;
+                 let dy = physY - se.y;
+                 let distSq = dx*dx + dy*dy;
+                 if (distSq < minDistSq) {
+                     minDistSq = distSq;
+                     closestSE = se;
+                 }
+             }
+             if (!closestSE) return null;
+             return `${closestSE.x.toFixed(1)},${closestSE.y.toFixed(1)}`; // Return ID string
+         }
+
+        // calculatePathLengthFromPoints remains the same
+        function calculatePathLengthFromPoints(pathPoints) { /* ... */ let length=0; if(!pathPoints||pathPoints.length<2)return 0; for(let i=0;i<pathPoints.length-1;i++){let p1=pathPoints[i]; let p2=pathPoints[i+1]; let dx=p2.x-p1.x; let dy=p2.y-p1.y; length+=Math.sqrt(dx*dx+dy*dy);} return length; }
+
+
+        // **** UPDATED Tortuosity Calculation using SE Graph A* ****
+        function calculateTortuosityPathsSEGraph() {
+             console.log("Calculating tortuosity paths using A* on SE graph...");
+             pathLengths.min = design_length;
+
+             // Define start/end points in physical coords
+             const startMaxPhys = { x: 0.5, y: 0.5 }; const endMaxPhys = { x: 33.5, y: 34.5 };
+             const startMedPhys = { x: 17.5, y: 0.5 }; const endMedPhys = { x: 33.5, y: 34.5 };
+
+             // Find closest SE particle IDs for start/end nodes
+             const startNodeMaxId = findClosestSENode(startMaxPhys.x, startMaxPhys.y);
+             const endNodeMaxId = findClosestSENode(endMaxPhys.x, endMaxPhys.y);
+             const startNodeMedId = findClosestSENode(startMedPhys.x, startMedPhys.y);
+             const endNodeMedId = findClosestSENode(endMedPhys.x, endMedPhys.y); // Same end
+
+              // Min Path (Straight line visual) - use physical coords
+              let minXPos = 34.5; // Keep at right edge
+             actualPaths.min = [{x: minXPos, y: 0}, {x: minXPos, y: design_length}];
+
+             // Calculate Max Path
+             if (startNodeMaxId && endNodeMaxId && seAdjacencyGraph.has(startNodeMaxId) && seAdjacencyGraph.has(endNodeMaxId)) {
+                 actualPaths.max = findShortestPathSEGraph(seAdjacencyGraph, seParticleMap, startNodeMaxId, endNodeMaxId);
+                 pathLengths.max = calculatePathLengthFromPoints(actualPaths.max); // Calculate geometric length
+             } else { console.error("Could not find valid start/end nodes for Max Path SE Graph A*"); actualPaths.max = []; pathLengths.max = 0; }
+
+             // Calculate Median Path
+              if (startNodeMedId && endNodeMedId && seAdjacencyGraph.has(startNodeMedId) && seAdjacencyGraph.has(endNodeMedId)) {
+                 actualPaths.median = findShortestPathSEGraph(seAdjacencyGraph, seParticleMap, startNodeMedId, endNodeMedId);
+                 pathLengths.median = calculatePathLengthFromPoints(actualPaths.median); // Calculate geometric length
+             } else { console.error("Could not find valid start/end nodes for Median Path SE Graph A*"); actualPaths.median = []; pathLengths.median = 0; }
+
+             console.log(`SE Graph A* Path Lengths: Max=${pathLengths.max.toFixed(1)}, Median=${pathLengths.median.toFixed(1)}`);
+         }
+
+
+        // **** UPDATED Display function ****
+        function updateInfoDisplay(){ /* ... same logic using pathLengths ... */ if (!infoDisplay) return; let numConnectedSE=particles.filter(p=>p.type==='SE'&&p.isConnectedSE).length; let numTotalSE=particles.filter(p=>p.type==='SE').length; let tauMax=(pathLengths.max>0)?(pathLengths.max/design_length).toFixed(2):"N/A"; let tauMed=(pathLengths.median>0)?(pathLengths.median/design_length).toFixed(2):"N/A"; infoDisplay.innerHTML=`--- Configuration ---\nTotal Particles: ${particles.length}\nCAM Count: ${particles.filter(p=>p.type==='CAM').length}\nSE Count: ${numTotalSE} (${numConnectedSE} connected to bottom)\n--- Metrics ---\nPorosity (ε): ${porosity.toFixed(3)} (${(porosity*100).toFixed(1)}%)\nCAM Utilization: ${camUtilization.toFixed(1)}%\n--- Tortuosity Path Examples (µm) ---\nMinimum (Straight): ${pathLengths.min.toFixed(1)} (τ ≈ 1.00)\nMedian (A* SE Graph): ${pathLengths.median.toFixed(1)} (τ ≈ ${tauMed})\nMaximum (A* SE Graph): ${pathLengths.max.toFixed(1)} (τ ≈ ${tauMax})`; }
+
+        // --- Run Sketch ---
+        document.addEventListener('DOMContentLoaded', (event) => {
+             infoDisplay = document.getElementById('info-display');
+             new p5(sketch);
+        });
+
+    </script>
+</body>
+</html>

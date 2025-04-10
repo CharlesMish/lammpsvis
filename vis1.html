@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Particle Type Probability Visualizer</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/addons/p5.dom.min.js"></script>
+  <style>
+    body { padding: 20px; font-family: sans-serif; }
+    .label { display: inline-block; min-width: 150px; margin-bottom: 10px; vertical-align: middle; }
+    .value-display { display: inline-block; min-width: 60px; font-weight: bold; vertical-align: middle; }
+    .slider { vertical-align: middle; }
+    .section-title { font-weight: bold; margin-top: 20px; margin-bottom: 10px; font-size: 1.1em; }
+    #viz-container { margin-top: 30px; border: 1px solid #ccc; padding: 10px;} /* Added border for clarity */
+    #result-text { margin-top: 20px; font-weight: bold; font-size: 1.2em; min-height: 1.5em; }
+  </style>
+</head>
+<body>
+  <h1>Visualization 1: CAM/SE Particle Type Selection</h1>
+  <p>Adjust the parameters below to see how they influence the 'CAM Threshold'. This threshold determines the probability that the next particle will be designated as CAM.</p>
+
+  <div id="controls">
+    <div class="section-title">Material Densities (g/cm³)</div>
+    <div>
+      <span class="label">CAM Density (ρ_cam):</span>
+      <input type="range" id="camRhoSlider" class="slider" min="2.0" max="10.0" value="4.74" step="0.01">
+      <span class="value-display" id="camRhoValue">4.74</span>
+    </div>
+    <div>
+      <span class="label">SE Density (ρ_se):</span>
+      <input type="range" id="seRhoSlider" class="slider" min="1.0" max="5.0" value="2.07" step="0.01">
+      <span class="value-display" id="seRhoValue">2.07</span>
+    </div>
+    <div class="section-title">Target Weight Percentages (%)</div>
+    <div>
+      <span class="label">CM Weight %:</span>
+      <input type="range" id="cmWtSlider" class="slider" min="0" max="5" value="3.0" step="0.1"> <span class="value-display" id="cmWtValue">3.0</span>%
+    </div>
+    <div>
+      <span class="label">CAM Weight %:</span>
+      <input type="range" id="camWtSlider" class="slider" min="0" max="97" value="85" step="0.1"> <span class="value-display" id="camWtValue">85.0</span>%
+      <span style="font-style: italic; margin-left: 10px;"> (Max is 100 - CM Wt %)</span>
+    </div>
+     <div>
+      <span class="label" style="font-style: italic;">Resulting SE Weight %:</span>
+      <span class="value-display" id="seWtValue">12.0</span>% <span style="font-style: italic; margin-left: 10px;"> (100 - CM% - CAM%)</span>
+    </div>
+
+    <div class="section-title">Average Particle Diameters (μm)</div>
+     <div>
+       <span class="label">CAM Avg. Diameter (μ_cam):</span>
+       <input type="range" id="camMuSlider" class="slider" min="1" max="25" value="10.9" step="0.1">
+       <span class="value-display" id="camMuValue">10.9</span> μm
+     </div>
+     <div>
+       <span class="label" style="font-style: italic;">CAM Avg. Particle Vol (V_p,cam):</span>
+       <span class="value-display" id="camPvolValue">0.0</span> μm³
+     </div>
+     <div>
+       <span class="label">SE Avg. Diameter (μ_se):</span>
+       <input type="range" id="seMuSlider" class="slider" min="0.1" max="5" value="1.0" step="0.05">
+       <span class="value-display" id="seMuValue">1.0</span> μm
+     </div>
+      <div>
+       <span class="label" style="font-style: italic;">SE Avg. Particle Vol (V_p,se):</span>
+       <span class="value-display" id="sePvolValue">0.0</span> μm³
+     </div>
+  </div>
+
+  <div id="viz-container"></div>
+  <button id="generateButton">Generate Random Number</button>
+  <div id="result-text"></div>
+
+  <script>
+    // --- Global Variables ---
+    let camRhoSlider, seRhoSlider; // cmRhoSlider removed
+    let cmWtSlider, camWtSlider;
+    let camMuSlider, seMuSlider;
+
+    let camRhoValueSpan, seRhoValueSpan; // cmRhoValueSpan removed
+    let cmWtValueSpan, camWtValueSpan, seWtValueSpan;
+    let camMuValueSpan, seMuValueSpan;
+    let camPvolValueSpan, sePvolValueSpan;
+
+    let generateButton;
+    let resultTextP;
+
+    let camThreshold = 0.5; // Calculated probability_CAM
+    let randomNumber = -1; // Store the generated random number (-1 indicates none generated yet)
+    let resultMessage = "";
+
+    // Visualization dimensions
+    let barX, barY, barWidth, barHeight;
+    let markerY;
+    let textYOffset; // For spacing text lines
+
+    // Colors
+    let camColor;
+    let seColor; // Changed to yellow
+    let markerColor;
+    let textColor;
+
+    function setup() {
+      // Create canvas inside the specific container div
+      let canvas = createCanvas(windowWidth * 0.9, 250); // Wider canvas, taller for text
+      canvas.parent('viz-container');
+
+      // Define Colors
+      camColor = color(150, 150, 255); // Light blue
+      seColor = color(255, 215, 0, 200); // Gold, slightly transparent
+      markerColor = color(0, 150, 0); // Green
+      textColor = color(0); // Black
+
+      // --- Link Sliders and Spans ---
+      camRhoSlider = select('#camRhoSlider');
+      seRhoSlider = select('#seRhoSlider');
+      // cmRhoSlider link removed
+      cmWtSlider = select('#cmWtSlider');
+      camWtSlider = select('#camWtSlider');
+      camMuSlider = select('#camMuSlider');
+      seMuSlider = select('#seMuSlider');
+
+      camRhoValueSpan = select('#camRhoValue');
+      seRhoValueSpan = select('#seRhoValue');
+      // cmRhoValueSpan link removed
+      cmWtValueSpan = select('#cmWtValue');
+      camWtValueSpan = select('#camWtValue');
+      seWtValueSpan = select('#seWtValue');
+      camMuValueSpan = select('#camMuValue');
+      seMuValueSpan = select('#seMuValue');
+      camPvolValueSpan = select('#camPvolValue');
+      sePvolValueSpan = select('#sePvolValue');
+
+      // --- Link Button and Result Text ---
+      generateButton = select('#generateButton');
+      generateButton.mousePressed(generateAndCompare);
+      resultTextP = select('#result-text');
+
+      // --- Add Input Event Listeners ---
+      camRhoSlider.input(updateCalculations);
+      seRhoSlider.input(updateCalculations);
+      // cmRhoSlider listener removed
+      cmWtSlider.input(updateCalculations);
+      camWtSlider.input(updateCalculations);
+      camMuSlider.input(updateCalculations);
+      seMuSlider.input(updateCalculations);
+
+      // --- Initialize Bar Dimensions ---
+      barWidth = width * 0.95; // Make bar wider
+      barHeight = 50;         // Make bar taller
+      barX = (width - barWidth) / 2;
+      textYOffset = 20; // Space between text lines
+      // Position bar lower to accommodate text above it
+      barY = 100;
+      markerY = barY+32; // Position marker above the bar
+
+      // Initial calculation
+      updateCalculations();
+    }
+
+    // Adjust canvas if window resized
+    function windowResized() {
+        resizeCanvas(windowWidth * 0.95, 250);
+        // Recalculate positions based on new width
+        barWidth = width * 0.95;
+        barX = (width - barWidth)/2;
+    }
+
+
+    function draw() {
+      background(240);
+      textFont('sans-serif');
+
+      // --- Draw the Probability Bar ---
+      stroke(0);
+      strokeWeight(1);
+
+      // SE part (background) - Now Yellow
+      fill(seColor);
+      rect(barX, barY, barWidth, barHeight);
+
+      // CAM part
+      fill(camColor);
+      let camWidth = map(camThreshold, 0, 1, 0, barWidth);
+      // Ensure camWidth doesn't exceed barWidth due to floating point issues
+      camWidth = constrain(camWidth, 0, barWidth);
+      rect(barX, barY, camWidth, barHeight);
+
+      // Divider line
+      strokeWeight(2);
+      line(barX + camWidth, barY, barX + camWidth, barY + barHeight);
+
+      // --- Draw Labels Above Bar ---
+      textAlign(CENTER, BOTTOM);
+      fill(textColor);
+      noStroke();
+      textSize(16);
+      text(`CAM Threshold: ${camThreshold.toFixed(4)}`, width / 2, barY - 3 * textYOffset); // Move text up
+      textSize(14);
+      let camPercentage = camThreshold * 100;
+      let sePercentage = 100.0 - camPercentage;
+      text(`Percentage chance that particle will be CAM: ${camPercentage.toFixed(2)}%`, width / 2, barY - 2 * textYOffset);
+      text(`Percentage chance that particle will be SE: ${sePercentage.toFixed(2)}%`, width / 2, barY - textYOffset);
+
+
+      // --- Draw Bar Labels (0, 1, CAM, SE) ---
+      textAlign(CENTER, CENTER);
+      textSize(12);
+      text("0", barX - 15, barY + barHeight / 2);
+      text("1", barX + barWidth + 15, barY + barHeight / 2);
+      textSize(14);
+       // Dynamically position CAM/SE labels based on threshold
+      if (camThreshold > 0.1) {
+           textAlign(RIGHT, CENTER);
+           text("CAM", barX + camWidth - 8, barY + barHeight / 2);
+      }
+      if (camThreshold < 0.9) {
+           textAlign(LEFT, CENTER);
+           text("SE", barX + camWidth + 8, barY + barHeight / 2);
+      }
+
+      // --- Draw the Random Number Marker ---
+      if (randomNumber >= 0) {
+        let markerX = map(randomNumber, 0, 1, barX, barX + barWidth);
+        markerX = constrain(markerX, barX, barX + barWidth); // Keep marker within bar bounds
+
+        stroke(markerColor); // Green marker
+        strokeWeight(2);
+        line(markerX, markerY - 10, markerX, markerY + 10); // Vertical line
+        // Triangle marker
+        fill(markerColor);
+        noStroke();
+        triangle(markerX, markerY + 10, markerX - 5, markerY + 18, markerX + 5, markerY + 18);
+        // Display the number
+        fill(textColor);
+        textAlign(CENTER, BOTTOM);
+        textSize(12);
+        text(randomNumber.toFixed(4), markerX, markerY - 15);
+      }
+
+       // --- Display Result Text ---
+       resultTextP.html(resultMessage); // Update the HTML content of the div
+    }
+
+    function updateCalculations() {
+      // --- Read Values ---
+      let camRho = parseFloat(camRhoSlider.value()); // Use parseFloat for calculations
+      let seRho = parseFloat(seRhoSlider.value());
+      // cmRho removed
+      let cmWtPerc = parseFloat(cmWtSlider.value());
+      let camWtPerc = parseFloat(camWtSlider.value());
+      let camMu = parseFloat(camMuSlider.value());
+      let seMu = parseFloat(seMuSlider.value());
+
+      // --- Update Displays ---
+      camRhoValueSpan.html(camRho.toFixed(2));
+      seRhoValueSpan.html(seRho.toFixed(2));
+      // cmRho display removed
+      cmWtValueSpan.html(cmWtPerc.toFixed(1));
+
+      // --- Constrain CAM Wt % ---
+      let maxCamWt = 100.0 - cmWtPerc;
+      camWtSlider.attribute('max', maxCamWt); // Update slider max attribute
+      if (camWtPerc > maxCamWt) {
+          camWtPerc = maxCamWt;
+          camWtSlider.value(camWtPerc); // Adjust slider value if needed
+      }
+       camWtValueSpan.html(camWtPerc.toFixed(1));
+
+      // --- Calculate SE Wt % ---
+      let seWtPerc = 100.0 - cmWtPerc - camWtPerc;
+      seWtPerc = max(0, seWtPerc); // Ensure non-negative
+      seWtValueSpan.html(seWtPerc.toFixed(1));
+
+       // --- Update Mu and Calculate Particle Volumes ---
+       camMuValueSpan.html(camMu.toFixed(1));
+       seMuValueSpan.html(seMu.toFixed(2));
+
+       let camPvol = (PI / 6.0) * pow(camMu, 3);
+       let sePvol = (PI / 6.0) * pow(seMu, 3);
+       // Avoid division by zero / tiny numbers causing issues later
+       camPvol = max(camPvol, 1e-12);
+       sePvol = max(sePvol, 1e-12);
+       camPvolValueSpan.html(camPvol.toExponential(2));
+       sePvolValueSpan.html(sePvol.toExponential(2));
+
+      // --- Calculate CAM Threshold (probability_CAM) ---
+      let target_cam_weight = camWtPerc / 100.0;
+      let target_se_weight = seWtPerc / 100.0;
+
+      // Terms represent relative number of particles needed for target weights
+      let camTerm = 0;
+      if (camRho > 0 && camPvol > 0 && target_cam_weight > 0) {
+        camTerm = (target_cam_weight / camRho) / camPvol;
+      }
+
+      let seTerm = 0;
+       if (seRho > 0 && sePvol > 0 && target_se_weight > 0) {
+        seTerm = (target_se_weight / seRho) / sePvol;
+      }
+
+      // Calculate threshold
+      if (camTerm + seTerm > 1e-12) { // Use tolerance for floating point comparison
+          camThreshold = camTerm / (camTerm + seTerm);
+      } else if (camTerm > 1e-12) { // Only CAM is possible
+           camThreshold = 1.0;
+      } else { // Only SE or neither is possible (or zero volumes/weights)
+           camThreshold = 0.0;
+      }
+      camThreshold = constrain(camThreshold, 0.0, 1.0); // Ensure it's strictly within [0, 1]
+
+    }
+
+    function generateAndCompare() {
+       randomNumber = random(0, 1); // Generate a number between 0.0 and 1.0
+
+       if (randomNumber < camThreshold) {
+           resultMessage = `Random Number (${randomNumber.toFixed(4)}) < CAM Threshold (${camThreshold.toFixed(4)}) -> Particle will be <span style="color:blue; font-weight:bold;">CAM</span>`;
+       } else {
+            // Changed SE color in text
+            resultMessage = `Random Number (${randomNumber.toFixed(4)}) >= CAM Threshold (${camThreshold.toFixed(4)}) -> Particle will be <span style="color:darkgoldenrod; font-weight:bold;">SE</span>`;
+       }
+    }
+
+  </script>
+</body>
+</html>

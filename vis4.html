@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LAMMPS Dynamics Visualization (2 Particles + Plot)</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/addons/p5.dom.min.js"></script>
+    <style> /* CSS remains the same */
+        body { padding: 10px; font-family: sans-serif; display: flex; flex-direction: column; align-items: center;}
+        .container { width: 95%; max-width: 700px; margin-bottom: 15px; }
+        #viz-container { width: 100%; height: 350px; border: 1px solid #ccc; margin-bottom: 10px; position: relative;}
+        #plot-container { width: 100%; height: 250px; border: 1px solid #ccc; margin-bottom: 15px; position: relative;}
+        #controls-container { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin-bottom: 10px;}
+        #info-display { font-family: monospace; white-space: pre; border: 1px solid #eee; background-color: #f8f8f8; padding: 10px; font-size: 0.9em; text-align: left; width: 100%; box-sizing: border-box; }
+        button { padding: 5px 10px; font-size: 0.9em; }
+        canvas { display: block; }
+    </style>
+</head>
+<body>
+    <h1>Visualization 4: LAMMPS Dynamics (Verlet + Hertzian)</h1>
+    <p>Illustrates time integration and contact forces. Time step increased <span id="dtMultSpan">10</span>x for visualization speed. (Given the explicit nature, may become unstable at higher values.)</p>
+
+    <div class="container">
+        <div id="viz-container"></div>
+        <div id="plot-container"></div>
+        <div id="controls-container">
+            <button id="resetButton">Reset</button>
+            <button id="stepButton">Next Timestep</button>
+             | CAM E:
+            <button id="camE90Button">90 GPa</button>
+            <button id="camE190Button">190 GPa</button>
+             | SE E:
+            <button id="seE15Button">15 GPa</button>
+            <button id="seE25Button">25 GPa</button>
+        </div>
+        <div>
+             <label for="dtMultSlider">Vis Speed (dt multiplier): </label>
+             <input type="range" id="dtMultSlider" min="1" max="50" value="3" step="1">
+             <span id="dtMultValue">10</span>x
+         </div>
+        <div id="info-display"> Initializing... </div>
+    </div>
+
+    <script>
+        // --- Global Settings & State ---
+        // (Constants nu, base_dt, dt_multiplier, dt, F_ext_mag)
+        // (Particle Properties R_CAM, R_SE, rho_CAM, rho_SE, m_CAM, m_SE)
+        // (Moduli E_CAM, E_SE)
+        const nu = 0.3; const base_dt = 0.00005; let dt_multiplier = 10; let dt = base_dt * dt_multiplier; const F_ext_mag = 1e4;
+        const R_CAM = 1.0; const R_SE = 0.5; const rho_CAM = 4.74; const rho_SE = 2.07; const m_CAM = rho_CAM*(4/3)*Math.PI*Math.pow(R_CAM,3); const m_SE = rho_SE*(4/3)*Math.PI*Math.pow(R_SE,3);
+        let E_CAM = 90e6; let E_SE = 25e6;
+
+        // Simulation State
+        let simTime = 0; let pos_SE; let vel_SE; let acc_SE; let overlap_delta = 0;
+        let F_contact_vec; let F_ext_vec; let F_net_vec;
+
+        let pixelsPerMicron = 100;
+        let visOrigin;
+
+        // **** REMOVED deltaPow15History ****
+        let timeHistory = [], posYHistory = [], velYHistory = [], overlapHistory = [], fContactYHistory = [];
+        let plotNeedsRedraw = true;
+
+        // DOM Elements
+        let resetButton, stepButton, camE90Button, camE190Button, seE15Button, seE25Button;
+        let infoDisplay;
+        let dtMultSlider, dtMultValueSpan, dtMultSpan;
+        let particleSketchInstance, plotSketchInstance;
+
+        // --- Helper: Contact Force Calculation ---
+        // (Remains the same, includes console.log for debugging if needed)
+        function calculateContactForce(delta) { if (!particleSketchInstance || delta <= 1e-12) return particleSketchInstance ? particleSketchInstance.createVector(0,0) : null; let R_eff=(R_CAM*R_SE)/(R_CAM+R_SE); let E_eff_inv=((1-nu*nu)/E_CAM)+((1-nu*nu)/E_SE); if(E_eff_inv<1e-12) return particleSketchInstance.createVector(0,0); let E_eff=1.0/E_eff_inv; delta = Math.max(0, delta); let delta_pow_1_5 = Math.pow(delta, 1.5); let sqrt_R_eff = Math.sqrt(R_eff); let Fn_mag=(4.0/3.0)*E_eff*sqrt_R_eff*delta_pow_1_5; /*console.log(`Contact Calc: delta=${delta.toFixed(5)}, delta^1.5=${delta_pow_1_5.toExponential(3)}, R_eff=${R_eff.toFixed(3)}, E_eff=${E_eff.toExponential(2)}, Fn_mag=${Fn_mag.toExponential(3)}`);*/ return particleSketchInstance.createVector(0, Fn_mag); }
+
+
+        // --- Simulation Control Functions ---
+        function resetSimulation() {
+            console.log("Resetting simulation");
+            if (!visOrigin) { console.error("visOrigin not set!"); return; }
+
+            simTime = 0; overlap_delta = 0;
+            let initial_gap = 1.01; // Small gap in µm for visibility
+            let initialPosY_µm = R_CAM + R_SE + initial_gap;
+
+            if (particleSketchInstance) {
+                 pos_SE = particleSketchInstance.createVector(visOrigin.x, initialPosY_µm);
+                 vel_SE = particleSketchInstance.createVector(0, 0);
+                 acc_SE = particleSketchInstance.createVector(0, 0);
+                 F_ext_vec = particleSketchInstance.createVector(0, -F_ext_mag);
+                 F_contact_vec = particleSketchInstance.createVector(0, 0);
+                 F_net_vec = F_ext_vec.copy();
+                 if (m_SE > 1e-12) acc_SE = p5.Vector.div(F_net_vec, m_SE); else acc_SE.set(0,0);
+            } else { console.error("particleSketchInstance not available during reset!"); return; }
+
+             // **** Clear History ****
+             timeHistory = [simTime]; posYHistory = [pos_SE.y]; velYHistory = [vel_SE.y];
+             overlapHistory = [overlap_delta]; fContactYHistory = [F_contact_vec.y];
+             // deltaPow15History = [0]; // Removed
+
+            updateInfoDisplay();
+             plotNeedsRedraw = true;
+             if (plotSketchInstance) plotSketchInstance.redraw();
+             if (particleSketchInstance) particleSketchInstance.loop();
+             console.log("Reset complete. Initial SE Y:", initialPosY_µm.toFixed(4));
+        }
+
+        function stepSimulation() {
+             if (!pos_SE || !vel_SE || !acc_SE || !F_net_vec || !F_ext_vec || !F_contact_vec || !particleSketchInstance) { console.warn("Sim state not ready."); return; }
+             dt = base_dt * dt_multiplier;
+             F_net_vec = p5.Vector.add(F_ext_vec, F_contact_vec); // Use F_contact from end of *previous* step
+             if(m_SE > 1e-12) acc_SE = p5.Vector.div(F_net_vec, m_SE); else acc_SE.set(0, 0);
+             vel_SE.add(p5.Vector.mult(acc_SE, dt));
+             pos_SE.y = pos_SE.y + vel_SE.y * dt; // Update position using new velocity
+             let distance = pos_SE.y - R_CAM;
+             overlap_delta = (R_CAM + R_SE) - distance;
+
+             let new_F_contact = null;
+             if (overlap_delta > 0 && distance > 1e-9) { new_F_contact = calculateContactForce(overlap_delta); }
+              if (new_F_contact) { F_contact_vec = new_F_contact; }
+             else { overlap_delta = Math.max(0, overlap_delta); F_contact_vec.set(0, 0); }
+
+             simTime += dt;
+
+             // **** Store only necessary history ****
+             timeHistory.push(simTime); posYHistory.push(pos_SE.y); velYHistory.push(vel_SE.y);
+             overlapHistory.push(overlap_delta); fContactYHistory.push(F_contact_vec.y);
+             // deltaPow15History removed
+
+             updateInfoDisplay(); plotNeedsRedraw = true; if (plotSketchInstance) plotSketchInstance.redraw();
+        }
+
+        // setE_CAM, setE_SE remain the same
+        function setE_CAM(value) { E_CAM=value; console.log("Set E_CAM to",(value/1e6).toFixed(0),"GPa"); let new_F_c=null; if(overlap_delta>0){new_F_c=calculateContactForce(overlap_delta);} if(new_F_c){F_contact_vec=new_F_c;}else{F_contact_vec.set(0,0);} updateInfoDisplay(); plotNeedsRedraw=true; if(plotSketchInstance)plotSketchInstance.redraw(); }
+        function setE_SE(value) { E_SE=value; console.log("Set E_SE to",(value/1e6).toFixed(0),"GPa"); let new_F_c=null; if(overlap_delta>0){new_F_c=calculateContactForce(overlap_delta);} if(new_F_c){F_contact_vec=new_F_c;}else{F_contact_vec.set(0,0);} updateInfoDisplay(); plotNeedsRedraw=true; if(plotSketchInstance)plotSketchInstance.redraw(); }
+        // updateInfoDisplay remains the same
+        function updateInfoDisplay(){ if (!infoDisplay || !pos_SE) return; infoDisplay.innerHTML = `Time: ${simTime.toExponential(3)} µs (${(simTime/base_dt).toFixed(0)} base steps) | Vis dt: ${dt.toExponential(1)} µs (${dt_multiplier}x)\nCAM E: ${(E_CAM/1e6).toFixed(0)} GPa | SE E: ${(E_SE/1e6).toFixed(0)} GPa\n---------- SE Particle ----------\nPos Y: ${pos_SE.y.toFixed(4)} µm (rel to floor)\nVel Y: ${vel_SE.y.toExponential(3)} µm/µs\nAcc Y: ${acc_SE.y.toExponential(3)} µm/µs²\nOverlap δ: ${overlap_delta.toFixed(4)} µm\nF_ext Y: ${F_ext_vec.y.toExponential(3)} pg·µm/µs²\nF_contact Y: ${F_contact_vec.y.toExponential(3)} pg·µm/µs²\nF_net Y: ${(F_ext_vec.y + F_contact_vec.y).toExponential(3)} pg·µm/µs²`; }
+
+
+        // --- p5.js Sketch Definitions ---
+        let particleSketch = function(p) { /* ... setup, draw, drawForceArrow ... */
+            let camColor, seColor, forceColorExt, forceColorContact;
+            p.setup = function() { let cont=document.getElementById('viz-container'); let w=cont.clientWidth; let h=cont.clientHeight; let canvas=p.createCanvas(w>0?w:500,h>0?h:350); canvas.parent('viz-container'); visOrigin=p.createVector(p.width/2,p.height*0.85); console.log("Particle viz setup complete. visOrigin set:", visOrigin); camColor=p.color(100,100,255); seColor=p.color(255,215,0); forceColorExt=p.color(0,180,0); forceColorContact=p.color(200,0,0); resetSimulation(); }; // Calls resetSimulation
+            p.draw = function() { p.background(240); if (!pos_SE || !visOrigin) return; let camScreenY=p.height-(R_CAM*pixelsPerMicron); let camRadiusPx=R_CAM*pixelsPerMicron; p.fill(camColor);p.stroke(0); p.ellipse(visOrigin.x,camScreenY,camRadiusPx*2,camRadiusPx*2); p.fill(0);p.textAlign(p.CENTER,p.CENTER); p.text("CAM",visOrigin.x,camScreenY); let seScreenY=p.height-(pos_SE.y*pixelsPerMicron); let seRadiusPx=R_SE*pixelsPerMicron; p.fill(seColor);p.stroke(0); p.ellipse(visOrigin.x,seScreenY,seRadiusPx*2,seRadiusPx*2); p.fill(0);p.textAlign(p.CENTER,p.CENTER); p.text("SE",visOrigin.x,seScreenY); if(F_ext_vec)drawForceArrow(p,visOrigin.x,seScreenY,p.createVector(F_ext_vec.x,-F_ext_vec.y),forceColorExt,"F_ext"); if(F_contact_vec)drawForceArrow(p,visOrigin.x,seScreenY,p.createVector(F_contact_vec.x,-F_contact_vec.y),forceColorContact,"F_contact"); };
+             function drawForceArrow(p,startX,startY,forceVecFlipY,color,label){if(!forceVecFlipY||forceVecFlipY.magSq()<1e-9)return; p.push(); p.stroke(color);p.fill(color);p.strokeWeight(2); let scale=0.00002*pixelsPerMicron; let endX=startX+forceVecFlipY.x*scale; let endY=startY+forceVecFlipY.y*scale; p.line(startX,startY,endX,endY); let angle=forceVecFlipY.heading(); p.translate(endX,endY); p.rotate(angle); p.triangle(0,0,-6,-3,-6,3); p.rotate(-angle); p.noStroke();p.textSize(10); let labelOffsetX=-p.textWidth(label)/2; let labelOffsetY=forceVecFlipY.y>0?10:-10; p.text(label,labelOffsetX,labelOffsetY); p.pop();}
+        };
+
+        let plotSketch = function(p) {
+            let margin={top:15,right:30,bottom:40,left:60}; let plotW,plotH;
+            let posColor,velColor,overlapColor,forceColor; // Removed deltaPowColor
+
+            p.setup = function(){ /* ... same setup ... */
+                 let cont=document.getElementById('plot-container'); plotW=cont.clientWidth; plotH=cont.clientHeight; let canvas=p.createCanvas(plotW>0?plotW:500,plotH>0?plotH:250); canvas.parent('plot-container'); p.noLoop(); posColor=p.color(0,0,255); velColor=p.color(0,150,0); overlapColor=p.color(255,165,0); forceColor=p.color(200,0,0); console.log("Plot setup complete.");
+            };
+
+            // **** MODIFIED findMinMax function ****
+            const findMinMax=(arr, forceMinZero = false) => {
+                if (arr.length === 0) return { min: 0, max: 1 };
+                let minVal = Infinity, maxVal = -Infinity;
+                for (let val of arr) {
+                    if (!isFinite(val)) continue;
+                    if (val < minVal) minVal = val;
+                    if (val > maxVal) maxVal = val;
+                }
+                if (minVal === Infinity) { minVal = 0; maxVal = 1; } // Handle empty or all non-finite
+
+                // If forceMinZero is true AND the actual data minimum is >= 0,
+                // clamp the range minimum near zero.
+                if (forceMinZero && minVal >= -1e-9) { // Allow for tiny negative due to float errors
+                     // Set min slightly below 0 for visual axis room, proportional to max, but ensure it's <=0
+                     minVal = Math.min(0, -0.05 * Math.abs(maxVal));
+                     if (Math.abs(maxVal) < 1e-9) { // Handle case where max is also 0
+                           minVal = -0.1;
+                           maxVal = 1.0; // Give some default range if all zero
+                      }
+                 } else {
+                    // Original padding logic for other cases or when min is negative
+                    let range = maxVal - minVal;
+                    if (range < 1e-9) { minVal -= 0.1; maxVal += 0.1; }
+                    else { minVal -= range * 0.1; maxVal += range * 0.1; }
+                }
+                 // Ensure max is always meaningfully greater than min after adjustment
+                 if (maxVal <= minVal + 1e-9) maxVal = minVal + 1.0; // Ensure some range
+
+                return { min: minVal, max: maxVal };
+            };
+
+            p.draw = function(){
+                 if(!plotNeedsRedraw) return;
+                 console.log("Drawing plot..."); p.background(250); plotW=p.width; plotH=p.height; let plotAreaW=plotW-margin.left-margin.right; let plotAreaH=plotH-margin.top-margin.bottom;
+                 if(timeHistory.length<2||plotAreaW<=0||plotAreaH<=0){ /* ... no data message ... */ return;}
+
+                 let tMin=timeHistory[0]; let tMax=timeHistory[timeHistory.length-1]; if(tMax<=tMin)tMax=tMin+dt;
+                 // **** Apply forceMinZero = true to Overlap and Force ranges ****
+                 let yPosRange=findMinMax(posYHistory);
+                 let yVelRange=findMinMax(velYHistory);
+                 let yOverlapRange=findMinMax(overlapHistory, true); // Force min near 0
+                 let yForceRange=findMinMax(fContactYHistory, true); // Force min near 0
+                 // let yDeltaPowRange = findMinMax(deltaPow15History); // Removed
+
+                 console.log("Plot Ranges:", {t:[tMin.toExponential(1),tMax.toExponential(1)], yPos:yPosRange, yVel:yVelRange, yOverlap:yOverlapRange, yForce:yForceRange}); // DEBUG Updated
+
+                 p.push(); p.translate(margin.left,margin.top);
+                 // Draw Axes
+                 p.stroke(0);p.strokeWeight(1); p.line(0,plotAreaH,plotAreaW,plotAreaH); p.fill(0);p.noStroke();p.textAlign(p.CENTER,p.TOP); p.text("Time (µs)",plotAreaW/2,plotAreaH+5); p.textAlign(p.CENTER,p.TOP); p.text(tMin.toExponential(1),0,plotAreaH+5); p.text(tMax.toExponential(1),plotAreaW,plotAreaH+5); p.stroke(0);p.strokeWeight(1); p.line(0,0,0,plotAreaH);
+                 // Draw Y axis zero line for reference if min is negative
+                  let yZero = p.map(0, yForceRange.min, yForceRange.max, plotAreaH, 0); // Map 0 using force scale
+                  if (yZero >= 0 && yZero <= plotAreaH) {
+                       p.stroke(180); p.strokeWeight(0.5);
+                       p.line(0, yZero, plotAreaW, yZero); // Draw zero line across plot
+                  }
+
+
+                 // --- Draw Data Lines ---
+                 const drawLine=(data, range, color, yMapMin = 0, yMapMax = plotAreaH) => { /* ... same drawLine function ... */ p.stroke(color);p.noFill();p.strokeWeight(1.5); p.beginShape(); for(let i=0;i<timeHistory.length;i++){let x=p.map(timeHistory[i],tMin,tMax,0,plotAreaW); let y=p.map(data[i],range.min,range.max,yMapMax,yMapMin); if(isFinite(x)&&isFinite(y)){p.vertex(x,y);}else{/* console.warn(`Invalid plot point @ i=${i}: t=${timeHistory[i]}, data=${data[i]}`); */}} p.endShape();}; // Simplified warning
+
+                 drawLine(posYHistory, yPosRange, posColor);
+                 drawLine(velYHistory, yVelRange, velColor);
+                 // Map Overlap to lower half, using its range which starts near 0 now
+                 drawLine(overlapHistory, yOverlapRange, overlapColor, plotAreaH / 2, plotAreaH);
+                 // Map Force to full height, using its range which starts near 0 now
+                 drawLine(fContactYHistory, yForceRange, forceColor);
+                 // drawLine(deltaPow15History, yDeltaPowRange, deltaPowColor); // Removed
+
+                 p.pop(); // Back to origin
+                 // Update Legend
+                 let legX=margin.left+10,legY=margin.top+10,legSp=15; p.noStroke();p.textSize(10);p.textAlign(p.LEFT,p.TOP);
+                 p.fill(posColor); p.text(`Pos Y (${yPosRange.min.toExponential(1)} to ${yPosRange.max.toExponential(1)} µm)`, legX, legY);
+                 p.fill(velColor); p.text(`Vel Y (${yVelRange.min.toExponential(1)} to ${yVelRange.max.toExponential(1)} µm/µs)`, legX, legY+legSp);
+                 p.fill(overlapColor); p.text(`Overlap (${yOverlapRange.min.toExponential(1)} to ${yOverlapRange.max.toExponential(1)} µm)`, legX, legY+2*legSp);
+                 p.fill(forceColor); p.text(`F_Cont Y (${yForceRange.min.toExponential(1)} to ${yForceRange.max.toExponential(1)})`, legX, legY+3*legSp);
+                 // Removed delta^1.5 legend
+
+                 plotNeedsRedraw=false; console.log("Plot drawn.");
+            };
+         };
+
+        // Run sketches after DOM is ready
+        document.addEventListener('DOMContentLoaded', (event) => {
+             infoDisplay = document.getElementById('info-display'); dtMultSlider = document.getElementById('dtMultSlider'); dtMultValueSpan = document.getElementById('dtMultValue'); dtMultSpan = document.getElementById('dtMultSpan');
+             const updateDt = () => { dt_multiplier = parseInt(dtMultSlider.value); dt = base_dt * dt_multiplier; dtMultValueSpan.innerText = dt_multiplier; dtMultSpan.innerText = dt_multiplier; console.log("Set dt_multiplier to:", dt_multiplier, "| dt =", dt.toExponential(2)); };
+             dtMultSlider.oninput = updateDt; updateDt();
+             particleSketchInstance = new p5(particleSketch); plotSketchInstance = new p5(plotSketch);
+             document.getElementById('resetButton').onclick = resetSimulation; document.getElementById('stepButton').onclick = stepSimulation; document.getElementById('camE90Button').onclick = () => setE_CAM(90e6); document.getElementById('camE190Button').onclick = () => setE_CAM(190e6); document.getElementById('seE15Button').onclick = () => setE_SE(15e6); document.getElementById('seE25Button').onclick = () => setE_SE(25e6);
+             // Initial reset called from particleSketch.setup
+        });
+
+    </script>
+</body>
+</html>
